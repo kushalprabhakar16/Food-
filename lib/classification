@@ -1,0 +1,128 @@
+// Deterministic Classification Engine
+// Assigns exactly one category to each report: CRITICAL, MAJOR, MINOR, ADVISORY, PASSED
+
+export type Category = 'CRITICAL' | 'MAJOR' | 'MINOR' | 'ADVISORY' | 'PASSED' | 'UNKNOWN';
+
+export interface ClassificationResult {
+  category: Category;
+  violationCode: string;
+  reason: string;
+  conflictingCodes: string[];
+  isFinal: boolean;
+}
+
+// Category priority (lower = higher priority for conflict resolution)
+const CATEGORY_PRIORITY: Record<string, number> = {
+  CRITICAL: 1,
+  MAJOR: 2,
+  MINOR: 3,
+  ADVISORY: 4,
+  PASSED: 5,
+  UNKNOWN: 6,
+};
+
+// Violation code -> category mapping (deterministic)
+const CODE_TO_CATEGORY: Record<string, Category> = {
+  'V01-CRITICAL': 'CRITICAL',
+  'V02-MAJOR': 'MAJOR',
+  'V03-MINOR': 'MINOR',
+  'V04-ADVISORY': 'ADVISORY',
+  'V05-PASSED': 'PASSED',
+};
+
+// Keyword-based classification rules for violation descriptions
+const KEYWORD_RULES: { keywords: string[]; category: Category }[] = [
+  { keywords: ['contamination', 'poisoning', 'hazardous', 'toxic', 'dangerous', 'immediate threat', 'severe illness'], category: 'CRITICAL' },
+  { keywords: ['unsafe temperature', 'sanitation failure', 'serious hygiene', 'pest infestation', 'cross-contamination'], category: 'MAJOR' },
+  { keywords: ['minor hygiene', 'documentation error', 'procedural', 'labeling', 'minor violation'], category: 'MINOR' },
+  { keywords: ['recommendation', 'improvement', 'suggestion', 'observation', 'advisory'], category: 'ADVISORY' },
+  { keywords: ['no violation', 'passed', 'compliant', 'satisfactory', 'all standards met'], category: 'PASSED' },
+];
+
+export function classifyByCode(violationCode: string): Category {
+  const normalized = violationCode.trim().toUpperCase();
+  return CODE_TO_CATEGORY[normalized] || 'UNKNOWN';
+}
+
+export function classifyByDescription(description: string): Category {
+  const lower = description.toLowerCase();
+  let bestCategory: Category = 'UNKNOWN';
+  let bestPriority = 999;
+
+  for (const rule of KEYWORD_RULES) {
+    for (const keyword of rule.keywords) {
+      if (lower.includes(keyword)) {
+        const priority = CATEGORY_PRIORITY[rule.category];
+        if (priority < bestPriority) {
+          bestPriority = priority;
+          bestCategory = rule.category;
+        }
+      }
+    }
+  }
+
+  return bestCategory;
+}
+
+export function classifyReport(
+  violationCode: string,
+  violationDescription: string,
+): ClassificationResult {
+  const codeCategory = classifyByCode(violationCode);
+  const descCategory = classifyByDescription(violationDescription);
+  const conflictingCodes: string[] = [];
+
+  // Deterministic conflict resolution:
+  // 1. If code maps to a known category, use that (code is authoritative)
+  // 2. If code is UNKNOWN, use description-based classification
+  // 3. If both are known and differ, use the higher-severity category (lower priority number)
+  let finalCategory: Category = codeCategory;
+  let reason = '';
+
+  if (codeCategory === 'UNKNOWN' && descCategory !== 'UNKNOWN') {
+    finalCategory = descCategory;
+    reason = `Violation code "${violationCode}" is not in the standard mapping. Classified as ${descCategory} based on violation description keywords.`;
+  } else if (codeCategory === 'UNKNOWN' && descCategory === 'UNKNOWN') {
+    finalCategory = 'UNKNOWN';
+    reason = `Unable to classify: violation code "${violationCode}" is unknown and description contains no matching keywords. Report sent for administrative correction.`;
+  } else if (codeCategory !== 'UNKNOWN' && descCategory !== 'UNKNOWN' && codeCategory !== descCategory) {
+    // Conflict: use the more severe category
+    conflictingCodes.push(`${codeCategory} (from code)`, `${descCategory} (from description)`);
+    if (CATEGORY_PRIORITY[codeCategory] <= CATEGORY_PRIORITY[descCategory]) {
+      finalCategory = codeCategory;
+      reason = `Conflict detected: code indicates ${codeCategory}, description indicates ${descCategory}. Resolved to ${codeCategory} (higher severity per priority rules).`;
+    } else {
+      finalCategory = descCategory;
+      reason = `Conflict detected: code indicates ${codeCategory}, description indicates ${descCategory}. Resolved to ${descCategory} (higher severity per priority rules).`;
+    }
+  } else if (codeCategory !== 'UNKNOWN') {
+    finalCategory = codeCategory;
+    reason = `Classified as ${codeCategory} based on violation code ${violationCode}.`;
+  } else {
+    finalCategory = 'UNKNOWN';
+    reason = `Classification inconclusive. Sent for administrative correction.`;
+  }
+
+  return {
+    category: finalCategory,
+    violationCode,
+    reason,
+    conflictingCodes,
+    isFinal: finalCategory !== 'UNKNOWN',
+  };
+}
+
+export function getCategoryColor(category: Category): string {
+  switch (category) {
+    case 'CRITICAL': return 'bg-red-100 text-red-800 border-red-300';
+    case 'MAJOR': return 'bg-orange-100 text-orange-800 border-orange-300';
+    case 'MINOR': return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+    case 'ADVISORY': return 'bg-blue-100 text-blue-800 border-blue-300';
+    case 'PASSED': return 'bg-green-100 text-green-800 border-green-300';
+    default: return 'bg-gray-100 text-gray-800 border-gray-300';
+  }
+}
+
+export function getCategoryPriority(category: Category): number {
+  return CATEGORY_PRIORITY[category] || 999;
+}
