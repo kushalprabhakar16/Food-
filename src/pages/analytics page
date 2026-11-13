@@ -1,0 +1,323 @@
+import { useState, useEffect, useCallback } from 'react';
+import { supabase, Report } from '@/lib/supabase';
+import { PageHeader, LoadingSpinner, EmptyState, StatCard } from '@/components/ui';
+import { BarChart3, FileText, CheckCircle2, Clock, TrendingUp, MapPin, Users, AlertTriangle } from 'lucide-react';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  LineElement,
+  PointElement,
+  ArcElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler,
+} from 'chart.js';
+import { Bar, Doughnut, Line } from 'react-chartjs-2';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  LineElement,
+  PointElement,
+  ArcElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler,
+);
+
+const NAVY_COLORS = ['#102a43', '#243b53', '#334e68', '#486581', '#627d98', '#9fb3c8'];
+const CATEGORY_COLORS: Record<string, string> = {
+  CRITICAL: '#dc2626',
+  MAJOR: '#ea580c',
+  MINOR: '#ca8a04',
+  ADVISORY: '#2563eb',
+  PASSED: '#16a34a',
+  UNKNOWN: '#6b7280',
+};
+const PRIORITY_COLORS: Record<string, string> = {
+  emergency: '#dc2626',
+  critical: '#ea580c',
+  high: '#f59e0b',
+  normal: '#486581',
+};
+
+export function AnalyticsPage() {
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dateFilter, setDateFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [priorityFilter, setPriorityFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  const fetchReports = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from('reports').select('*').order('created_at', { ascending: true });
+    setReports((data as Report[]) || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    fetchReports();
+  }, [fetchReports]);
+
+  // Apply filters
+  const filteredReports = reports.filter((r) => {
+    if (categoryFilter !== 'all' && r.category !== categoryFilter) return false;
+    if (priorityFilter !== 'all' && r.priority !== priorityFilter) return false;
+    if (statusFilter !== 'all' && r.status !== statusFilter) return false;
+    if (dateFilter !== 'all') {
+      const reportDate = new Date(r.created_at);
+      const now = new Date();
+      const diffDays = Math.floor((now.getTime() - reportDate.getTime()) / (1000 * 60 * 60 * 24));
+      if (dateFilter === '7' && diffDays > 7) return false;
+      if (dateFilter === '30' && diffDays > 30) return false;
+      if (dateFilter === '90' && diffDays > 90) return false;
+    }
+    return true;
+  });
+
+  // Compute analytics
+  const totalReports = filteredReports.length;
+  const categoryCounts: Record<string, number> = {};
+  const statusCounts: Record<string, number> = { pending: 0, assigned: 0, in_progress: 0, resolved: 0 };
+  const priorityCounts: Record<string, number> = { emergency: 0, critical: 0, high: 0, normal: 0 };
+  const zoneCounts: Record<string, number> = {};
+  const monthlyTrends: Record<string, number> = {};
+
+  filteredReports.forEach((r) => {
+    if (r.category) categoryCounts[r.category] = (categoryCounts[r.category] || 0) + 1;
+    if (r.status) statusCounts[r.status] = (statusCounts[r.status] || 0) + 1;
+    if (r.priority) priorityCounts[r.priority] = (priorityCounts[r.priority] || 0) + 1;
+    if (r.zone_id) zoneCounts[`Zone ${r.zone_id}`] = (zoneCounts[`Zone ${r.zone_id}`] || 0) + 1;
+    const month = new Date(r.created_at).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+    monthlyTrends[month] = (monthlyTrends[month] || 0) + 1;
+  });
+
+  const resolutionRate = totalReports > 0 ? Math.round((statusCounts.resolved / totalReports) * 100) : 0;
+
+  if (loading) return <LoadingSpinner text="Loading analytics..." />;
+
+  if (totalReports === 0) {
+    return (
+      <div>
+        <PageHeader title="Analytics Dashboard" subtitle="Real-time insights from inspection data" icon={BarChart3} />
+        <EmptyState icon={BarChart3} title="No Data Available" message="No reports match your current filters. Submit inspection reports to see analytics here." />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <PageHeader title="Analytics Dashboard" subtitle="Real-time insights from inspection data" icon={BarChart3} />
+
+      {/* Filters */}
+      <div className="card p-4 mb-6 flex flex-wrap gap-3">
+        <div>
+          <label className="block text-xs text-navy-500 mb-1">Date Range</label>
+          <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className="input-field text-sm py-1.5">
+            <option value="all">All Time</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-navy-500 mb-1">Category</label>
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="input-field text-sm py-1.5">
+            <option value="all">All Categories</option>
+            <option value="CRITICAL">Critical</option>
+            <option value="MAJOR">Major</option>
+            <option value="MINOR">Minor</option>
+            <option value="ADVISORY">Advisory</option>
+            <option value="PASSED">Passed</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-navy-500 mb-1">Priority</label>
+          <select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)} className="input-field text-sm py-1.5">
+            <option value="all">All Priorities</option>
+            <option value="emergency">Emergency</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="normal">Normal</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-navy-500 mb-1">Status</label>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="input-field text-sm py-1.5">
+            <option value="all">All Statuses</option>
+            <option value="pending">Pending</option>
+            <option value="assigned">Assigned</option>
+            <option value="in_progress">In Progress</option>
+            <option value="resolved">Resolved</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <StatCard title="Total Inspections" value={totalReports} icon={FileText} color="navy" />
+        <StatCard title="Resolved" value={statusCounts.resolved} icon={CheckCircle2} color="green" />
+        <StatCard title="Pending + Assigned" value={statusCounts.pending + statusCounts.assigned} icon={Clock} color="amber" />
+        <StatCard title="Resolution Rate" value={`${resolutionRate}%`} icon={TrendingUp} color="blue" />
+      </div>
+
+      {/* Charts Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        {/* Category Distribution */}
+        <div className="card p-5">
+          <h3 className="font-semibold text-navy-900 mb-4">Category-wise Reports</h3>
+          <div className="h-64 flex items-center justify-center">
+            <Doughnut
+              data={{
+                labels: Object.keys(categoryCounts),
+                datasets: [{
+                  data: Object.values(categoryCounts),
+                  backgroundColor: Object.keys(categoryCounts).map((k) => CATEGORY_COLORS[k] || '#6b7280'),
+                  borderWidth: 2,
+                  borderColor: '#fff',
+                }],
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { position: 'right' } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Status Distribution */}
+        <div className="card p-5">
+          <h3 className="font-semibold text-navy-900 mb-4">Pending vs Resolved Reports</h3>
+          <div className="h-64 flex items-center justify-center">
+            <Doughnut
+              data={{
+                labels: ['Pending', 'Assigned', 'In Progress', 'Resolved'],
+                datasets: [{
+                  data: [statusCounts.pending, statusCounts.assigned, statusCounts.in_progress, statusCounts.resolved],
+                  backgroundColor: ['#f59e0b', '#3b82f6', '#a855f7', '#16a34a'],
+                  borderWidth: 2,
+                  borderColor: '#fff',
+                }],
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { position: 'right' } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Zone-wise Reports */}
+        <div className="card p-5">
+          <h3 className="font-semibold text-navy-900 mb-4 flex items-center gap-2">
+            <MapPin size={18} className="text-navy-500" /> Zone-wise Reports
+          </h3>
+          <div className="h-64">
+            <Bar
+              data={{
+                labels: Object.keys(zoneCounts).length > 0 ? Object.keys(zoneCounts) : ['No zones'],
+                datasets: [{
+                  label: 'Reports',
+                  data: Object.values(zoneCounts).length > 0 ? Object.values(zoneCounts) : [0],
+                  backgroundColor: NAVY_COLORS[1],
+                  borderRadius: 6,
+                }],
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Priority-wise Reports */}
+        <div className="card p-5">
+          <h3 className="font-semibold text-navy-900 mb-4 flex items-center gap-2">
+            <AlertTriangle size={18} className="text-navy-500" /> Priority-wise Reports
+          </h3>
+          <div className="h-64">
+            <Bar
+              data={{
+                labels: ['Emergency', 'Critical', 'High', 'Normal'],
+                datasets: [{
+                  label: 'Reports',
+                  data: [priorityCounts.emergency, priorityCounts.critical, priorityCounts.high, priorityCounts.normal],
+                  backgroundColor: ['emergency', 'critical', 'high', 'normal'].map((p) => PRIORITY_COLORS[p]),
+                  borderRadius: 6,
+                }],
+              }}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Monthly Trends - Full width */}
+      <div className="card p-5 mb-6">
+        <h3 className="font-semibold text-navy-900 mb-4 flex items-center gap-2">
+          <TrendingUp size={18} className="text-navy-500" /> Monthly Inspection Trends
+        </h3>
+        <div className="h-72">
+          <Line
+            data={{
+              labels: Object.keys(monthlyTrends),
+              datasets: [{
+                label: 'Reports Submitted',
+                data: Object.values(monthlyTrends),
+                borderColor: NAVY_COLORS[1],
+                backgroundColor: 'rgba(72, 101, 129, 0.1)',
+                fill: true,
+                tension: 0.3,
+                pointBackgroundColor: NAVY_COLORS[1],
+                pointRadius: 5,
+                pointHoverRadius: 7,
+              }],
+            }}
+            options={{
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: {
+                y: { beginAtZero: true, ticks: { precision: 0 } },
+              },
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Resolution Performance */}
+      <div className="card p-5">
+        <h3 className="font-semibold text-navy-900 mb-4 flex items-center gap-2">
+          <Users size={18} className="text-navy-500" /> Resolution Performance
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: 'Total Submitted', value: totalReports, color: 'text-navy-900' },
+            { label: 'Pending', value: statusCounts.pending, color: 'text-amber-600' },
+            { label: 'In Progress', value: statusCounts.in_progress, color: 'text-purple-600' },
+            { label: 'Resolved', value: statusCounts.resolved, color: 'text-green-600' },
+          ].map((item) => (
+            <div key={item.label} className="bg-navy-50 rounded-lg p-4 text-center">
+              <p className="text-3xl font-bold {item.color}">{item.value}</p>
+              <p className="text-xs text-navy-500 mt-1">{item.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
