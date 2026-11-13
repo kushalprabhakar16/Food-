@@ -1,0 +1,147 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Food Safety Inspection Portal</title>
+<style>
+:root{--n:#0b2545;--b:#13315c;--l:#e8f1fa;--a:#3b82c4;--bd:#d5e0ec;--ok:#1a8f5a;--w:#d98a00;--e:#c0392b;--bg:#f4f8fc;--tx:#1c2b3a;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1b2e;--tx:#e4edf7;--card:#14263d;--bd:#26405f;--l:#1b3556}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 system-ui,sans-serif;color:var(--tx);background:var(--bg)}
+#side{position:fixed;inset:0 auto 0 0;width:220px;background:var(--n);color:#fff;padding:16px 10px;overflow:auto}
+#side h1{font-size:14px;margin:0 6px 14px;line-height:1.3}#side a{display:block;color:#c9dcf0;text-decoration:none;padding:8px 10px;border-radius:6px;margin:2px 0}
+#side a.on,#side a:hover{background:var(--b);color:#fff}#main{margin-left:220px;padding:22px;max-width:1200px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:16px;margin-bottom:16px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}.stat b{font-size:26px;display:block;color:var(--a)}
+h2{margin:0 0 14px;color:var(--a)}h3{margin:0 0 10px}table{width:100%;border-collapse:collapse}th,td{padding:7px 8px;border-bottom:1px solid var(--bd);text-align:left;vertical-align:top}
+th{font-size:12px;text-transform:uppercase;opacity:.7}.tw{overflow-x:auto}
+input,select,textarea,button{font:inherit;padding:8px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--tx)}
+button{background:var(--a);color:#fff;border:0;cursor:pointer;margin:2px}button.s{background:#64748b}button.d{background:var(--e)}
+label{display:block;font-size:12px;font-weight:600;margin:8px 0 2px}.f{display:grid;gap:0 14px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}.f input,.f select,.f textarea{width:100%}
+.bad{background:var(--e);color:#fff}.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;background:var(--l)}
+.CRITICAL,.Emergency{background:#c0392b;color:#fff}.MAJOR,.Critical{background:#e67e22;color:#fff}.MINOR,.High{background:#f1c40f;color:#222}.ADVISORY{background:#3b82c4;color:#fff}.PASSED,.Resolved{background:#1a8f5a;color:#fff}
+.err{color:var(--e);font-size:12px}.good{color:var(--ok)}.bar{display:flex;align-items:center;gap:8px;margin:4px 0}.bar i{display:block;height:14px;background:var(--a);border-radius:3px;min-width:2px}
+pre{background:var(--l);padding:10px;border-radius:6px;overflow:auto;font-size:12px}#toast{position:fixed;right:16px;bottom:16px;background:var(--n);color:#fff;padding:10px 16px;border-radius:8px;display:none;z-index:9}
+.login{max-width:430px;margin:6vh auto;padding:0 14px}
+@media(max-width:760px){#side{position:static;width:auto;display:flex;flex-wrap:wrap}#side h1{width:100%}#main{margin:0;padding:12px}}
+</style></head><body><div id="app"></div><div id="toast"></div>
+<script>
+const K='fsip_v1',$=s=>document.querySelector(s),v=i=>$('#'+i).value.trim();
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const now=()=>new Date().toISOString().slice(0,19).replace('T',' ');
+const hash=s=>{let x=5381;for(const c of s)x=(x*33^c.charCodeAt(0))>>>0;return x.toString(36)};
+const RK={Emergency:0,Critical:1,High:2,Normal:3},ST=['Pending','Assigned','In Progress','Resolved'],CATS=['CRITICAL','MAJOR','MINOR','ADVISORY','PASSED'];
+/* ---------- DFA (BCS503) ---------- */
+const M=(s,c)=>s=='[0-9]'?c>='0'&&c<='9':s=='[A-Z]'?c>='A'&&c<='Z':s==c;
+const IT=[['q0','I','q1'],['q1','N','q2'],['q2','S','q3'],['q3','[A-Z]','q4'],['q4','[A-Z]','q5'],['q5','[0-9]','q6'],['q6','[0-9]','q7'],['q7','[0-9]','q8'],['q8','[0-9]','q9']];
+const VT=[['q0','V','q1'],['q1','[0-9]','q2'],['q2','[0-9]','q3'],['q3','-','T:']];
+CATS.forEach(t=>{for(let i=0;i<t.length;i++){const e=['T:'+t.slice(0,i),t[i],'T:'+t.slice(0,i+1)];if(!VT.some(x=>x+''==e+''))VT.push(e)}});
+const IA=['q9'],VA=CATS.map(t=>'T:'+t);
+function run(T,A,s){let q='q0';const tr=[];let err=null;for(let i=0;i<s.length;i++){const c=s[i],e=T.find(x=>x[0]==q&&M(x[1],c)),n=e?e[2]:'DEAD';tr.push(`${q} --'${c}'--> ${n}`);if(n=='DEAD'){const ex=T.filter(x=>x[0]==q).map(x=>x[1]);err=ex.length?`Position ${i+1}: unexpected '${c}', expected ${ex.join(' or ')}`:`Extra characters after position ${i}`;q='DEAD';break}q=n}
+ const ok=A.includes(q);if(!ok&&!err)err='Incomplete: input ended in state '+q;return{ok,tr,q,err}}
+const IR=/^INS[A-Z]{2}[0-9]{4}$/,VR=/^V[0-9]{2}-(CRITICAL|MAJOR|MINOR|ADVISORY|PASSED)$/;
+function chk(kind,s){const d=kind=='i'?run(IT,IA,s):run(VT,VA,s),r=(kind=='i'?IR:VR).test(s);return{...d,rx:r,agree:d.ok==r,valid:d.ok&&r}}
+/* ---------- Classification ---------- */
+const RULES={CRITICAL:/contaminat\w*|food[- ]?poison\w*|salmonella|e\.? ?coli|listeria|hazardous|sewage|toxic|outbreak/g,
+MAJOR:/unsafe (storage )?temperature|temperature abuse|cold[- ]storage failure|rodent\w*|cockroach\w*|pest infestation|unsanitary|expired|dirty equipment/g,
+MINOR:/documentation|paperwork|missing label\w*|signage|uniform|record keeping/g,ADVISORY:/recommend\w*|suggest\w*|improvement\w*|advis\w*|observation\w*/g};
+const NEG=['no ','not ','without ','free of ','zero '];
+function classify(code,desc){const c=chk('v',code);if(!c.valid)return null;const cc=code.split('-')[1],t=desc.toLowerCase();let kw=null;
+ for(const k of CATS.slice(0,4)){const re=RULES[k];re.lastIndex=0;let m;while((m=re.exec(t))){if(!NEG.some(n=>t.slice(Math.max(0,m.index-14),m.index).includes(n))){kw=k;break}}if(kw)break}
+ let f=cc;if(kw&&(cc=='PASSED'||CATS.indexOf(kw)<CATS.indexOf(cc)))f=kw;
+ return{cat:f,conflict:!!kw&&kw!=cc,why:kw&&kw!=cc?`Code says ${cc}, description implies ${kw}: resolved to more severe (${f})`:`Code category ${cc}`}}
+function priority(cat,urg,desc){const base={CRITICAL:'Critical',MAJOR:'High'}[cat]||'Normal',c=[base,urg];
+ if(/outbreak|hospitali[sz]|food poisoning|fatal/i.test(desc)&&cat!='PASSED')c.push('Emergency');return c.sort((a,b)=>RK[a]-RK[b])[0]}
+/* ---------- Database (localStorage) ---------- */
+let DB=JSON.parse(localStorage.getItem(K)||'null'),ME=JSON.parse(sessionStorage.getItem('me')||'null');
+const save=()=>localStorage.setItem(K,JSON.stringify(DB));
+const A=m=>{DB.audit.unshift({t:now(),u:ME?ME.user:'system',m});DB.audit=DB.audit.slice(0,300)};
+function seed(){const p=hash('Demo@12345');DB={seq:1,audit:[],reports:[],
+ zones:[1,2,3,4,5,6].map(i=>({id:i,name:'Zone '+i,from:i==1?560001:560000+(i-1)*20,to:560000+i*20-1})),
+ officers:[1,2,3,4,5,6].map(i=>({id:i,name:'Officer '+i,zone:i,type:'reg',cap:10,av:true})).concat([{id:7,name:'Deputy 1',zone:null,type:'dep',cap:10,av:true},{id:8,name:'Deputy 2',zone:null,type:'dep',cap:10,av:true}]),
+ users:[{user:'admin',pw:p,role:'admin',name:'Administrator'},{user:'inspector1',pw:p,role:'inspector',name:'Anita Rao',ins:'INSAB1234'},{user:'user1',pw:p,role:'user',name:'General User'},
+ ...[1,2,3,4,5,6].map(i=>({user:'officer'+i,pw:p,role:'officer',name:'Officer '+i,off:i})),{user:'deputy1',pw:p,role:'officer',name:'Deputy 1',off:7},{user:'deputy2',pw:p,role:'officer',name:'Deputy 2',off:8}]};save()}
+if(!DB)seed();
+/* ---------- Routing (cap 10, deputy, override, queues) ---------- */
+const open=o=>DB.reports.filter(r=>r.off==o.id&&(r.st=='Assigned'||r.st=='In Progress')).length;
+const pick=l=>l.filter(o=>o.av&&open(o)<o.cap).sort((a,b)=>open(a)-open(b)||a.id-b.id)[0];
+function hist(r,to,by,note){r.h.push({from:r.st,to,by,note,t:now()});r.st=to;r.upd=now()}
+function assign(r,o,why){if(open(o)>=o.cap)throw Error('Capacity limit (10) reached for '+o.name);if(r.off&&r.st!='Pending')return;r.off=o.id;r.q='assigned';hist(r,'Assigned','system',why);A(`${r.id} -> ${o.name} (${why})`)}
+function dispatch(r){if(r.st!='Pending')return;const z=DB.zones.find(z=>+r.pin>=z.from&&+r.pin<=z.to);r.zone=z?z.id:null;
+ if(!z){r.q='correction';A(`Unknown PIN ${r.pin}: ${r.id} sent to correction queue`);return}
+ let o=pick(DB.officers.filter(o=>o.type=='reg'&&o.zone==z.id)),how='least-loaded primary';
+ if(!o){o=pick(DB.officers.filter(o=>o.type=='dep'));how='deputy fallback'}
+ if(!o&&RK[r.pri]<=1){o=pick(DB.officers.filter(o=>o.type=='reg'&&o.zone!=z.id));how='priority override (cross-zone)';if(o)r.esc=true}
+ if(o)assign(r,o,r.pri+' via '+how);else{r.q='waiting'}}
+const drain=()=>DB.reports.filter(r=>r.q=='waiting').sort((a,b)=>RK[a.pri]-RK[b.pri]||a.n-b.n).forEach(dispatch);
+function submit(d){const e={};for(const k of['name','contact','unit','loc','desc','date','time'])if(!d[k])e[k]='Required';
+ const i=chk('i',d.ins),c=chk('v',d.code);if(!i.valid)e.ins=i.err||'Invalid';else if(ME.role=='inspector'&&ME.ins&&ME.ins!=d.ins)e.ins='Does not match your account';if(!c.valid)e.code=c.err||'Invalid';
+ if(!/^[1-9][0-9]{5}$/.test(d.pin))e.pin='6 digits, not starting with 0';if(d.date>new Date().toISOString().slice(0,10))e.date='Cannot be in the future';
+ if(Object.keys(e).length){A('Report rejected: '+Object.values(e).join('; '));save();return{e}}
+ const cl=classify(d.code,d.desc),pri=priority(cl.cat,d.urg,d.desc),n=DB.seq++;
+ const r={n,id:'FSI-'+d.date.replace(/-/g,'')+'-'+String(n).padStart(4,'0'),...d,cat:cl.cat,why:cl.why,pri,st:'Pending',q:'new',off:null,esc:false,by:ME.user,created:now(),upd:now(),h:[{from:null,to:'Pending',by:ME.user,note:'Submitted',t:now()}]};
+ DB.reports.push(r);A(`Submitted ${r.id}: ${r.cat}/${r.pri}`+(pri=='Emergency'?' [EMERGENCY OVERRIDE]':''));dispatch(r);save();return{r}}
+function setSt(id,to){const r=DB.reports.find(x=>x.id==id),o=ME.off;if(!(ME.role=='admin'||r.off==o))return toast('Not your case');
+ const ok={Assigned:'In Progress','In Progress':'Resolved'}[r.st]==to;if(!ok)return toast('Invalid transition');
+ let note='';if(to=='Resolved'){note=prompt('Resolution remarks (required):')||'';if(!note.trim())return toast('Remarks required');r.resolution=note}
+ hist(r,to,ME.user,note);A(`${id} -> ${to}`);if(to=='Resolved')drain();save();toast('Updated to '+to);go()}
+/* ---------- UI ---------- */
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(toast.x);toast.x=setTimeout(()=>t.style.display='none',2800)}
+const tag=x=>`<span class="tag ${esc(x)}">${esc(x)}</span>`;
+const bars=(o,mx)=>{mx=mx||Math.max(1,...Object.values(o));return Object.entries(o).map(([k,n])=>`<div class="bar"><span style="width:110px">${esc(k)}</span><i style="width:${n/mx*60}%"></i><b>${n}</b></div>`).join('')||'<p>No data yet.</p>'};
+const cnt=(l,f)=>l.reduce((a,x)=>(a[f(x)]=(a[f(x)]||0)+1,a),{});
+const mine=()=>ME.role=='admin'||ME.role=='user'?DB.reports:ME.role=='inspector'?DB.reports.filter(r=>r.by==ME.user):DB.reports.filter(r=>r.off==ME.off);
+const NAV=[['dash','Dashboard',0],['submit','Submit Report',['admin','inspector']],['reports','Reports / Cases',['admin','inspector','officer']],['track','Track Report',0],['analytics','Analytics',['admin','officer','inspector']],['routing','Routing & Officers',['admin']],['dfa','DFA Validator',0],['audit','Audit Log',['admin']]];
+function login(){const u=DB.users.find(x=>x.user==v('lu')&&x.pw==hash($('#lp').value));if(!u){$('#le').textContent='Invalid username or password';return}ME=u;sessionStorage.setItem('me',JSON.stringify(u));A('login');save();location.hash='dash';go()}
+function logout(){A('logout');save();ME=null;sessionStorage.removeItem('me');location.hash='';go()}
+function loginPage(){return`<div class="login"><div class="card"><h2>FOOD SAFETY INSPECTION PORTAL</h2><p>Smart Inspection, Intelligent Classification and Automated Case Dispatch System.</p>
+<label>Username</label><input id="lu" style="width:100%" value="admin"><label>Password</label><input id="lp" type="password" style="width:100%" value="Demo@12345" onkeydown="event.key=='Enter'&&login()"><p id="le" class="err"></p><button onclick="login()">Sign in</button>
+<p style="font-size:12px;opacity:.8">Demo users (password Demo@12345): admin, inspector1 (INSAB1234), officer1-6, deputy1-2, user1.</p><hr><h3>Track a report (no login)</h3><input id="tid" placeholder="FSI-YYYYMMDD-0001"><button class="s" onclick="pubTrack()">Track</button><div id="tres"></div></div></div>`}
+function trackHtml(id){const r=DB.reports.find(x=>x.id==id.trim().toUpperCase());if(!r)return'<p class="err">No report found with that ID.</p>';const staff=ME&&(ME.role=='admin'||r.off==ME.off),z=DB.zones.find(z=>z.id==r.zone),o=DB.officers.find(o=>o.id==r.off);
+ return`<table><tr><th>Report</th><td>${esc(r.id)}</td></tr><tr><th>Submitted</th><td>${r.created}</td></tr><tr><th>Category</th><td>${tag(r.cat)}</td></tr><tr><th>Priority</th><td>${tag(r.pri)}</td></tr><tr><th>Status</th><td>${tag(r.st)}${r.q=='waiting'?' (waiting for an available officer)':r.q=='correction'?' (awaiting zone correction)':''}</td></tr>
+ <tr><th>Assigned</th><td>${o?(staff?esc(o.name):'Regulatory Office '+(z?esc(z.name):'')):'Not yet assigned'}</td></tr><tr><th>Last updated</th><td>${r.upd}</td></tr>${r.st=='Resolved'&&staff?`<tr><th>Resolution</th><td>${esc(r.resolution)}</td></tr>`:''}</table>`}
+function pubTrack(){$('#tres').innerHTML=trackHtml(v('tid'))}
+const P={
+dash(){const l=mine(),c=cnt(l,r=>r.st);return`<h2>Dashboard</h2><div class="grid">${[['Total',l.length],...ST.map(s=>[s,c[s]||0])].map(([k,n])=>`<div class="card stat"><b>${n}</b>${k}</div>`).join('')}</div>
+<div class="card"><h3>Recent reports</h3>${table(l.slice(-8).reverse())}</div>`},
+submit(){const t=new Date().toISOString().slice(0,10);return`<h2>Submit Inspection Report</h2><div class="card"><div class="f">
+<div><label>Inspector ID</label><input id="s_ins" value="${esc(ME.ins||'')}" placeholder="INSAB1234"><div class="err" id="e_ins"></div></div><div><label>Inspector name</label><input id="s_name" value="${esc(ME.role=='inspector'?ME.name:'')}"><div class="err" id="e_name"></div></div>
+<div><label>Contact</label><input id="s_contact" placeholder="phone or email"><div class="err" id="e_contact"></div></div><div><label>Restaurant / unit</label><input id="s_unit"><div class="err" id="e_unit"></div></div>
+<div><label>Location</label><input id="s_loc"><div class="err" id="e_loc"></div></div><div><label>PIN code (try 560005, or 999999 for unknown zone)</label><input id="s_pin" value="560005"><div class="err" id="e_pin"></div></div>
+<div><label>Violation code</label><input id="s_code" placeholder="V01-CRITICAL"><div class="err" id="e_code"></div></div><div><label>Urgency</label><select id="s_urg"><option>Normal</option><option>High</option><option>Critical</option><option>Emergency</option></select></div>
+<div><label>Date</label><input id="s_date" type="date" value="${t}" max="${t}"><div class="err" id="e_date"></div></div><div><label>Time</label><input id="s_time" type="time" value="10:30"><div class="err" id="e_time"></div></div></div>
+<label>Violation description</label><textarea id="s_desc" rows="3" style="width:100%"></textarea><div class="err" id="e_desc"></div><label>Remarks</label><textarea id="s_rem" rows="2" style="width:100%"></textarea>
+<p><button class="s" onclick="preview()">Validate</button><button onclick="doSubmit()">Submit Report</button><button class="d" onclick="go()">Reset Form</button></p><div id="pv"></div></div>`},
+reports(){const q=(window.fq||'').toLowerCase(),fs=window.fs||'';const l=mine().filter(r=>(!fs||r.st==fs)&&(!q||(r.id+r.unit).toLowerCase().includes(q))).reverse();
+ return`<h2>Reports / Cases</h2><div class="card"><input placeholder="Search ID or unit" value="${esc(window.fq||'')}" oninput="fq=this.value;go(1)"> <select onchange="fs=this.value;go()"><option value="">All statuses</option>${ST.map(s=>`<option ${s==fs?'selected':''}>${s}</option>`).join('')}</select>${ME.role=='officer'?workload():''}${table(l,true)}</div>`},
+track(){return`<h2>Track Report</h2><div class="card"><input id="tid" placeholder="Report ID"><button onclick="pubTrack()">Search</button><div id="tres"></div></div>`},
+analytics(){const l=mine(),m=cnt(l,r=>r.created.slice(0,7));return`<h2>Analytics</h2><div class="grid"><div class="card stat"><b>${l.length}</b>Total inspections</div><div class="card stat"><b>${l.filter(r=>r.st!='Resolved').length}</b>Open</div><div class="card stat"><b>${l.filter(r=>r.st=='Resolved').length}</b>Resolved</div></div>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))"><div class="card"><h3>By category</h3>${bars(cnt(l,r=>r.cat))}</div><div class="card"><h3>By priority</h3>${bars(cnt(l,r=>r.pri))}</div><div class="card"><h3>By status</h3>${bars(cnt(l,r=>r.st))}</div>
+<div class="card"><h3>By zone</h3>${bars(cnt(l,r=>r.zone?'Zone '+r.zone:'Unmapped'))}</div><div class="card"><h3>Officer workload (open / 10)</h3>${bars(Object.fromEntries(DB.officers.map(o=>[o.name,open(o)])),10)}</div><div class="card"><h3>Monthly trend</h3>${bars(m)}</div></div>`},
+routing(){const w=DB.reports.filter(r=>r.q=='waiting'),c=DB.reports.filter(r=>r.q=='correction');return`<h2>Routing & Officer Management</h2><div class="card tw"><h3>Routing table</h3><table><tr><th>Zone</th><th>PIN from</th><th>PIN to</th><th>Officer</th><th>Open</th><th>Capacity</th><th>Available</th></tr>
+${DB.zones.map(z=>{const o=DB.officers.find(o=>o.type=='reg'&&o.zone==z.id);return`<tr><td>${z.name}</td><td><input size=7 value="${z.from}" onchange="pinEdit(${z.id},'from',this.value)"></td><td><input size=7 value="${z.to}" onchange="pinEdit(${z.id},'to',this.value)"></td>${offCells(o)}</tr>`}).join('')}
+${DB.officers.filter(o=>o.type=='dep').map(o=>`<tr><td>Deputy pool (all zones)</td><td></td><td></td>${offCells(o)}</tr>`).join('')}</table></div>
+<div class="card"><h3>Waiting queue (${w.length})</h3>${table(w.sort((a,b)=>RK[a.pri]-RK[b.pri]||a.n-b.n))}</div>
+<div class="card"><h3>Correction queue: unknown PIN (${c.length})</h3>${c.map(r=>`<p>${esc(r.id)} PIN ${esc(r.pin)} <input id="cp${r.n}" size=7 placeholder="new PIN"><button onclick="fixPin(${r.n})">Fix & dispatch</button></p>`).join('')||'<p>Empty.</p>'}</div>
+<div class="card"><h3>Escalated / priority overrides</h3>${table(DB.reports.filter(r=>r.esc||r.pri=='Emergency'))}</div>`},
+dfa(){return`<h2>DFA Validator & Visualisation</h2><div class="card"><div class="f"><div><label>Inspector ID DFA: INS[A-Z]{2}[0-9]{4}</label><input id="di" value="INSAB1234" oninput="dfaRun()"></div><div><label>Violation code DFA: V[0-9]{2}-(CATEGORY)</label><input id="dv" value="V01-CRITICAL" oninput="dfaRun()"></div></div><div id="dres"></div></div>
+<div class="card tw"><h3>Inspector DFA transition table (start q0, accept q9, any other input -> DEAD)</h3>${tbl(IT)}</div><div class="card tw"><h3>Violation DFA (T:x = token trie; accept = full category word)</h3>${tbl(VT)}<p>Accepting: ${VA.join(', ')}</p></div>`},
+audit(){return`<h2>Audit Log</h2><div class="card tw"><table><tr><th>Time</th><th>User</th><th>Event</th></tr>${DB.audit.map(a=>`<tr><td>${a.t}</td><td>${esc(a.u)}</td><td>${esc(a.m)}</td></tr>`).join('')}</table></div><button class="d" onclick="if(confirm('Reset ALL demo data?')){seed();logout()}">Reset demo data</button>`}};
+const tbl=T=>`<table><tr><th>From</th><th>Input</th><th>To</th></tr>${T.map(x=>`<tr><td>${x[0]}</td><td>${esc(x[1])}</td><td>${x[2]}${(x[2]=='q9'||VA.includes(x[2]))?' (accept)':''}</td></tr>`).join('')}</table>`;
+function offCells(o){return o?`<td>${esc(o.name)}</td><td>${open(o)}</td><td><input type=number min=1 max=10 style="width:60px" value="${o.cap}" onchange="capEdit(${o.id},this.value)"></td><td><button class="${o.av?'':'d'}" onclick="togAv(${o.id})">${o.av?'Available':'Unavailable'}</button></td>`:'<td colspan=4>No officer</td>'}
+function workload(){const o=DB.officers.find(o=>o.id==ME.off);return`<p><b>${esc(o.name)}</b>: ${open(o)} open / ${o.cap} (remaining ${o.cap-open(o)}) <button class="${o.av?'':'d'}" onclick="togAv(${o.id})">${o.av?'Available':'Unavailable'}</button></p>`}
+function table(l,act){if(!l.length)return'<p>No reports yet.</p>';return`<div class="tw"><table><tr><th>ID</th><th>Unit</th><th>PIN</th><th>Category</th><th>Priority</th><th>Status</th><th>Officer</th><th>Submitted</th>${act?'<th>Actions</th>':''}</tr>${l.map(r=>{const o=DB.officers.find(o=>o.id==r.off);
+ return`<tr><td>${esc(r.id)}</td><td>${esc(r.unit)}</td><td>${esc(r.pin)}</td><td>${tag(r.cat)}</td><td>${tag(r.pri)}</td><td>${tag(r.st)}${r.q=='waiting'?' ⏳':r.q=='correction'?' ⚠':''}</td><td>${o?esc(o.name):'-'}${r.esc?' (escalated)':''}</td><td>${r.created}</td>${act?`<td>${r.st=='Assigned'?`<button onclick="setSt('${r.id}','In Progress')">Accept / Start</button>`:r.st=='In Progress'?`<button onclick="setSt('${r.id}','Resolved')">Resolve</button>`:''}<button class="s" onclick="hv('${r.id}')">History</button></td>`:''}</tr>`}).join('')}</table></div>`}
+function hv(id){const r=DB.reports.find(x=>x.id==id);alert(r.id+'\nClassification: '+r.why+'\n\n'+r.h.map(h=>`${h.t}  ${h.from||'-'} -> ${h.to}  (${h.by}) ${h.note||''}`).join('\n'))}
+function preview(){const i=chk('i',v('s_ins')),c=chk('v',v('s_code')),cl=classify(v('s_code'),v('s_desc'));
+ $('#pv').innerHTML=`<pre>Inspector ID "${esc(v('s_ins'))}"\n  DFA: ${i.ok?'ACCEPT':'REJECT'} | Regex: ${i.rx?'ACCEPT':'REJECT'} | agree: ${i.agree}${i.err?'\n  '+esc(i.err):''}\n  ${esc(i.tr.join('\n  '))}\n\nViolation code "${esc(v('s_code'))}"\n  DFA: ${c.ok?'ACCEPT':'REJECT'} | Regex: ${c.rx?'ACCEPT':'REJECT'} | agree: ${c.agree}${c.err?'\n  '+esc(c.err):''}\n\n`+(cl?`Classification: ${cl.cat} (${esc(cl.why)})\nPriority: ${priority(cl.cat,v('s_urg'),v('s_desc'))}`:'Unsupported violation code: will be rejected')+'</pre>'}
+function doSubmit(){document.querySelectorAll('.err').forEach(e=>e.textContent='');const res=submit({ins:v('s_ins'),name:v('s_name'),contact:v('s_contact'),unit:v('s_unit'),loc:v('s_loc'),pin:v('s_pin'),code:v('s_code'),desc:v('s_desc'),urg:v('s_urg'),date:v('s_date'),time:v('s_time'),rem:v('s_rem')});
+ if(res.e){for(const[k,m]of Object.entries(res.e)){const e=$('#e_'+k);if(e)e.textContent=m}return toast('Report rejected: fix the highlighted fields')}
+ const r=res.r;$('#pv').innerHTML=`<div class="card"><h3 class="good">Report submitted</h3>${trackHtml(r.id)}<p>${esc(r.why)}</p></div>`;toast('Submitted '+r.id)}
+function dfaRun(){const i=chk('i',v('di')),c=chk('v',v('dv'));$('#dres').innerHTML=`<pre>Inspector: DFA ${i.ok?'ACCEPT':'REJECT'} / Regex ${i.rx?'ACCEPT':'REJECT'} (agree: ${i.agree})  final state ${i.q}\n${esc(i.err||'')}\n${esc(i.tr.join('\n'))}\n\nViolation: DFA ${c.ok?'ACCEPT':'REJECT'} / Regex ${c.rx?'ACCEPT':'REJECT'} (agree: ${c.agree})  final state ${c.q}\n${esc(c.err||'')}\n${esc(c.tr.join('\n'))}</pre>`}
+function togAv(id){const o=DB.officers.find(o=>o.id==id);if(ME.role!='admin'&&ME.off!=id)return;o.av=!o.av;A(o.name+' availability '+o.av);if(o.av)drain();save();go()}
+function capEdit(id,n){n=+n;if(!(n>=1&&n<=10))return toast('Capacity must be 1-10'),go();DB.officers.find(o=>o.id==id).cap=n;A('Capacity set '+id+'='+n);drain();save();go()}
+function pinEdit(id,k,val){val=+val;const z=DB.zones.find(z=>z.id==id),n={...z,[k]:val};if(!(val>=100000&&val<=999999&&n.from<=n.to))return toast('Invalid PIN range'),go();
+ if(DB.zones.some(o=>o.id!=id&&n.from<=o.to&&n.to>=o.from))return toast('Range overlaps another zone'),go();z[k]=val;A(`Zone ${id} PIN ${z.from}-${z.to}`);save();toast('PIN range updated')}
+function fixPin(n){const r=DB.reports.find(x=>x.n==n),p=v('cp'+n),z=DB.zones.find(z=>+p>=z.from&&+p<=z.to);if(!z)return toast('PIN still maps to no zone');r.pin=p;r.q='waiting';A('Zone corrected '+r.id);dispatch(r);save();go()}
+function go(keep){const h=location.hash.slice(1)||'dash';if(!ME){$('#app').innerHTML=loginPage();return}
+ const nav=NAV.filter(n=>!n[2]||n[2].includes(ME.role)),pg=nav.find(n=>n[0]==h)?h:'dash';const ae=document.activeElement&&document.activeElement.id;
+ $('#app').innerHTML=`<nav id="side"><h1>FOOD SAFETY<br>INSPECTION PORTAL</h1>${nav.map(n=>`<a href="#${n[0]}" class="${n[0]==pg?'on':''}">${n[1]}</a>`).join('')}<a href="#" onclick="logout();return false">Sign out (${esc(ME.user)})</a></nav><main id="main">${P[pg]()}</main>`;
+ if(pg=='dfa')dfaRun();if(keep&&ae&&$('#'+ae)){const e=$('#'+ae);e.focus()}}
+window.addEventListener('hashchange',()=>go());go();
+</script></body></html>
