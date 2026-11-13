@@ -1,0 +1,295 @@
+/*
+# Food Safety Inspection Portal — Core Schema
+
+This migration creates the complete database schema for the Food Safety Inspection Portal,
+a government-grade inspection management system with automated validation, classification,
+routing, and dispatch capabilities.
+
+## New Tables
+
+1. `users` — Portal user accounts. Roles: administrator, inspector, district_officer, deputy_officer, general_user.
+2. `officers` — Regulatory officer records (district + deputy). Tracks zone assignment, capacity, current workload, availability.
+3. `zones` — Six configurable PIN-code routing zones.
+4. `pin_code_mappings` — Individual PIN-code → zone mappings.
+5. `deputy_officers` — Deputy officer pool zone fallback assignments.
+6. `reports` — Inspection reports with validation, classification, priority, zone, assignment, status.
+7. `classifications` — Classification history per report.
+8. `assignments` — Report-to-officer assignment records.
+9. `status_history` — Full status transition log.
+10. `routing_logs` — Audit trail for routing decisions.
+11. `audit_logs` — System-wide audit log.
+
+## Security
+- RLS enabled on all tables. Grants to `authenticated`. Shared operational data with authenticated access.
+*/
+
+-- USERS
+CREATE TABLE IF NOT EXISTS users (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  auth_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+  email text UNIQUE NOT NULL,
+  full_name text NOT NULL,
+  role text NOT NULL CHECK (role IN ('administrator', 'inspector', 'district_officer', 'deputy_officer', 'general_user')),
+  inspector_id text UNIQUE,
+  contact text,
+  availability text DEFAULT 'available' CHECK (availability IN ('available', 'unavailable', 'on_leave')),
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO service_role;
+DROP POLICY IF EXISTS "users_select_all" ON users;
+CREATE POLICY "users_select_all" ON users FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "users_insert_own" ON users;
+CREATE POLICY "users_insert_own" ON users FOR INSERT TO authenticated WITH CHECK (auth.uid() = auth_id);
+DROP POLICY IF EXISTS "users_update_own" ON users;
+CREATE POLICY "users_update_own" ON users FOR UPDATE TO authenticated USING (auth.uid() = auth_id) WITH CHECK (auth.uid() = auth_id);
+
+-- ZONES
+CREATE TABLE IF NOT EXISTS zones (
+  id serial PRIMARY KEY,
+  zone_id text UNIQUE NOT NULL,
+  zone_name text NOT NULL,
+  pin_start text NOT NULL,
+  pin_end text NOT NULL,
+  description text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+ALTER TABLE zones ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON zones TO authenticated;
+DROP POLICY IF EXISTS "zones_select_all" ON zones;
+CREATE POLICY "zones_select_all" ON zones FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "zones_insert_all" ON zones;
+CREATE POLICY "zones_insert_all" ON zones FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "zones_update_all" ON zones;
+CREATE POLICY "zones_update_all" ON zones FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "zones_delete_all" ON zones;
+CREATE POLICY "zones_delete_all" ON zones FOR DELETE TO authenticated USING (true);
+
+-- OFFICERS
+CREATE TABLE IF NOT EXISTS officers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+  officer_name text NOT NULL,
+  officer_type text NOT NULL CHECK (officer_type IN ('district', 'deputy')),
+  email text UNIQUE NOT NULL,
+  contact text,
+  zone_id integer REFERENCES zones(id),
+  capacity integer NOT NULL DEFAULT 10,
+  current_workload integer NOT NULL DEFAULT 0,
+  availability text NOT NULL DEFAULT 'available' CHECK (availability IN ('available', 'unavailable', 'on_leave')),
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+ALTER TABLE officers ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON officers TO authenticated;
+DROP POLICY IF EXISTS "officers_select_all" ON officers;
+CREATE POLICY "officers_select_all" ON officers FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "officers_insert_all" ON officers;
+CREATE POLICY "officers_insert_all" ON officers FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "officers_update_all" ON officers;
+CREATE POLICY "officers_update_all" ON officers FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "officers_delete_all" ON officers;
+CREATE POLICY "officers_delete_all" ON officers FOR DELETE TO authenticated USING (true);
+
+-- PIN CODE MAPPINGS
+CREATE TABLE IF NOT EXISTS pin_code_mappings (
+  id serial PRIMARY KEY,
+  pin_code text NOT NULL UNIQUE,
+  zone_id integer REFERENCES zones(id) ON DELETE CASCADE,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE pin_code_mappings ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON pin_code_mappings TO authenticated;
+DROP POLICY IF EXISTS "pin_select_all" ON pin_code_mappings;
+CREATE POLICY "pin_select_all" ON pin_code_mappings FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "pin_insert_all" ON pin_code_mappings;
+CREATE POLICY "pin_insert_all" ON pin_code_mappings FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "pin_update_all" ON pin_code_mappings;
+CREATE POLICY "pin_update_all" ON pin_code_mappings FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "pin_delete_all" ON pin_code_mappings;
+CREATE POLICY "pin_delete_all" ON pin_code_mappings FOR DELETE TO authenticated USING (true);
+
+-- DEPUTY OFFICERS
+CREATE TABLE IF NOT EXISTS deputy_officers (
+  id serial PRIMARY KEY,
+  officer_id uuid REFERENCES officers(id) ON DELETE CASCADE,
+  zone_id integer REFERENCES zones(id) ON DELETE CASCADE,
+  priority integer DEFAULT 1,
+  created_at timestamptz DEFAULT now(),
+  UNIQUE(officer_id, zone_id)
+);
+ALTER TABLE deputy_officers ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON deputy_officers TO authenticated;
+DROP POLICY IF EXISTS "deputy_select_all" ON deputy_officers;
+CREATE POLICY "deputy_select_all" ON deputy_officers FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "deputy_insert_all" ON deputy_officers;
+CREATE POLICY "deputy_insert_all" ON deputy_officers FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "deputy_update_all" ON deputy_officers;
+CREATE POLICY "deputy_update_all" ON deputy_officers FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "deputy_delete_all" ON deputy_officers;
+CREATE POLICY "deputy_delete_all" ON deputy_officers FOR DELETE TO authenticated USING (true);
+
+-- REPORTS
+CREATE TABLE IF NOT EXISTS reports (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id text UNIQUE NOT NULL,
+  inspector_id text NOT NULL,
+  inspector_name text NOT NULL,
+  inspector_contact text,
+  establishment_name text NOT NULL,
+  inspection_location text NOT NULL,
+  pin_code text NOT NULL,
+  violation_code text NOT NULL,
+  violation_description text NOT NULL,
+  inspection_date date NOT NULL,
+  inspection_time text NOT NULL,
+  urgency_level text NOT NULL CHECK (urgency_level IN ('emergency', 'critical', 'high', 'normal')),
+  remarks text,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'assigned', 'in_progress', 'resolved')),
+  category text CHECK (category IN ('CRITICAL', 'MAJOR', 'MINOR', 'ADVISORY', 'PASSED', 'UNKNOWN')),
+  priority text NOT NULL DEFAULT 'normal' CHECK (priority IN ('emergency', 'critical', 'high', 'normal')),
+  zone_id integer REFERENCES zones(id),
+  assigned_officer_id uuid REFERENCES officers(id),
+  assigned_at timestamptz,
+  resolution_remarks text,
+  submitted_by uuid REFERENCES users(id),
+  inspector_id_valid boolean DEFAULT false,
+  violation_code_valid boolean DEFAULT false,
+  dfa_transitions text,
+  validation_notes text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON reports TO authenticated;
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
+CREATE INDEX IF NOT EXISTS idx_reports_zone ON reports(zone_id);
+CREATE INDEX IF NOT EXISTS idx_reports_category ON reports(category);
+CREATE INDEX IF NOT EXISTS idx_reports_priority ON reports(priority);
+CREATE INDEX IF NOT EXISTS idx_reports_report_id ON reports(report_id);
+CREATE INDEX IF NOT EXISTS idx_reports_inspector_id ON reports(inspector_id);
+DROP POLICY IF EXISTS "reports_select_all" ON reports;
+CREATE POLICY "reports_select_all" ON reports FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "reports_insert_all" ON reports;
+CREATE POLICY "reports_insert_all" ON reports FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "reports_update_all" ON reports;
+CREATE POLICY "reports_update_all" ON reports FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "reports_delete_all" ON reports;
+CREATE POLICY "reports_delete_all" ON reports FOR DELETE TO authenticated USING (true);
+
+-- CLASSIFICATIONS
+CREATE TABLE IF NOT EXISTS classifications (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id uuid REFERENCES reports(id) ON DELETE CASCADE,
+  category text NOT NULL CHECK (category IN ('CRITICAL', 'MAJOR', 'MINOR', 'ADVISORY', 'PASSED', 'UNKNOWN')),
+  violation_code text NOT NULL,
+  classification_reason text,
+  conflicting_codes text,
+  is_final boolean DEFAULT true,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE classifications ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON classifications TO authenticated;
+DROP POLICY IF EXISTS "classifications_select_all" ON classifications;
+CREATE POLICY "classifications_select_all" ON classifications FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "classifications_insert_all" ON classifications;
+CREATE POLICY "classifications_insert_all" ON classifications FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "classifications_update_all" ON classifications;
+CREATE POLICY "classifications_update_all" ON classifications FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "classifications_delete_all" ON classifications;
+CREATE POLICY "classifications_delete_all" ON classifications FOR DELETE TO authenticated USING (true);
+
+-- ASSIGNMENTS
+CREATE TABLE IF NOT EXISTS assignments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id uuid REFERENCES reports(id) ON DELETE CASCADE,
+  officer_id uuid REFERENCES officers(id) ON DELETE CASCADE,
+  assignment_type text NOT NULL CHECK (assignment_type IN ('primary', 'deputy_fallback', 'escalated', 'manual')),
+  assignment_reason text,
+  assigned_at timestamptz DEFAULT now(),
+  is_active boolean DEFAULT true,
+  UNIQUE(report_id, officer_id)
+);
+ALTER TABLE assignments ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON assignments TO authenticated;
+DROP POLICY IF EXISTS "assignments_select_all" ON assignments;
+CREATE POLICY "assignments_select_all" ON assignments FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "assignments_insert_all" ON assignments;
+CREATE POLICY "assignments_insert_all" ON assignments FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "assignments_update_all" ON assignments;
+CREATE POLICY "assignments_update_all" ON assignments FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "assignments_delete_all" ON assignments;
+CREATE POLICY "assignments_delete_all" ON assignments FOR DELETE TO authenticated USING (true);
+
+-- STATUS HISTORY
+CREATE TABLE IF NOT EXISTS status_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id uuid REFERENCES reports(id) ON DELETE CASCADE,
+  previous_status text,
+  new_status text NOT NULL,
+  changed_by uuid REFERENCES users(id),
+  changed_by_name text,
+  remarks text,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE status_history ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON status_history TO authenticated;
+DROP POLICY IF EXISTS "status_history_select_all" ON status_history;
+CREATE POLICY "status_history_select_all" ON status_history FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "status_history_insert_all" ON status_history;
+CREATE POLICY "status_history_insert_all" ON status_history FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "status_history_update_all" ON status_history;
+CREATE POLICY "status_history_update_all" ON status_history FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "status_history_delete_all" ON status_history;
+CREATE POLICY "status_history_delete_all" ON status_history FOR DELETE TO authenticated USING (true);
+
+-- ROUTING LOGS
+CREATE TABLE IF NOT EXISTS routing_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id uuid REFERENCES reports(id) ON DELETE CASCADE,
+  zone_id integer REFERENCES zones(id),
+  officer_id uuid REFERENCES officers(id),
+  decision text NOT NULL,
+  reason text,
+  decision_type text CHECK (decision_type IN ('assigned', 'deputy_fallback', 'queued', 'escalated', 'emergency_override', 'fallback_correction')),
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE routing_logs ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON routing_logs TO authenticated;
+DROP POLICY IF EXISTS "routing_logs_select_all" ON routing_logs;
+CREATE POLICY "routing_logs_select_all" ON routing_logs FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "routing_logs_insert_all" ON routing_logs;
+CREATE POLICY "routing_logs_insert_all" ON routing_logs FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "routing_logs_update_all" ON routing_logs;
+CREATE POLICY "routing_logs_update_all" ON routing_logs FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "routing_logs_delete_all" ON routing_logs;
+CREATE POLICY "routing_logs_delete_all" ON routing_logs FOR DELETE TO authenticated USING (true);
+
+-- AUDIT LOGS
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_type text NOT NULL,
+  entity_type text,
+  entity_id text,
+  description text NOT NULL,
+  severity text DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+  user_id uuid REFERENCES users(id),
+  user_email text,
+  metadata jsonb,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON audit_logs TO authenticated;
+CREATE INDEX IF NOT EXISTS idx_audit_logs_event_type ON audit_logs(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+DROP POLICY IF EXISTS "audit_logs_select_all" ON audit_logs;
+CREATE POLICY "audit_logs_select_all" ON audit_logs FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "audit_logs_insert_all" ON audit_logs;
+CREATE POLICY "audit_logs_insert_all" ON audit_logs FOR INSERT TO authenticated WITH CHECK (true);
+DROP POLICY IF EXISTS "audit_logs_update_all" ON audit_logs;
+CREATE POLICY "audit_logs_update_all" ON audit_logs FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "audit_logs_delete_all" ON audit_logs;
+CREATE POLICY "audit_logs_delete_all" ON audit_logs FOR DELETE TO authenticated USING (true);
